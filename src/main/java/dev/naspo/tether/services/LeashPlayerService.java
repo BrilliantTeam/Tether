@@ -72,12 +72,12 @@ public class LeashPlayerService {
         World world = target.getWorld();
         Location loc = target.getLocation();
 
-        // Keeps track of leads in the leasher's hand. (Prevents duping).
-        int leads;
-
         // If they are holding a lead...
         if (player.getInventory().getItemInMainHand().getType().equals(Material.LEAD)) {
-            leads = player.getInventory().getItemInMainHand().getAmount();
+            // Take the lead here, not in the task below: by then vanilla has handled the interact and
+            // the main hand is no longer guaranteed to be the lead we just checked.
+            ItemStack held = player.getInventory().getItemInMainHand();
+            player.getInventory().setItemInMainHand(held.subtract());
 
             // The actual leashing process has to run in a scheduler with a slight delay,
             // due to the way the event works.
@@ -102,13 +102,6 @@ public class LeashPlayerService {
                                 "messages.player-leashed-not-escapable"));
                     }
                 }
-
-                // If a lead wasn't removed from the leasher's inventory, remove one.
-                ItemStack lead = new ItemStack(Material.LEAD, 1);
-                if (player.getInventory().getItemInMainHand().getAmount() == (leads - 1)) {
-                    return;
-                }
-                player.getInventory().removeItem(lead);
             }, 1L);
         }
     }

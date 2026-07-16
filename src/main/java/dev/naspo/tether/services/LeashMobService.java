@@ -8,7 +8,6 @@ import net.citizensnpcs.api.CitizensAPI;
 import net.citizensnpcs.api.npc.NPC;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.entity.*;
 import org.bukkit.inventory.ItemStack;
 
@@ -58,22 +57,13 @@ public class LeashMobService {
         }
 
         // Begin the leashing process.
-        // Keep track of the player's leads, prevents duping.
-        int leads = player.getInventory().getItemInMainHand().getAmount();
+        ItemStack held = player.getInventory().getItemInMainHand();
+        player.getInventory().setItemInMainHand(held.subtract());
 
         // Leashing the mob.
         // The actual leashing process has to run in a scheduler with a slight delay,
         // due to the way the event works.
-        runEntityTaskLater(entity, () -> {
-            entity.setLeashHolder(player);
-
-            // If a lead was not removed from the player's inventory, remove one.
-            ItemStack lead = new ItemStack(Material.LEAD, 1);
-            if (player.getInventory().getItemInMainHand().getAmount() == (leads - 1)) {
-                return;
-            }
-            player.getInventory().removeItem(lead);
-        }, 1L);
+        runEntityTaskLater(entity, () -> entity.setLeashHolder(player), 1L);
     }
 
     /**
