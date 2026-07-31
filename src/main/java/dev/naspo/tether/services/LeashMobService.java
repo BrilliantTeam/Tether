@@ -8,6 +8,7 @@ import net.citizensnpcs.api.CitizensAPI;
 import net.citizensnpcs.api.npc.NPC;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.entity.*;
 import org.bukkit.inventory.ItemStack;
 
@@ -38,6 +39,32 @@ public class LeashMobService {
      */
     public void playerLeashMob(Player player, LivingEntity entity) throws InvalidParameterException,
             NoPermissionException, LeashException {
+        checkCanLeash(player, entity);
+
+        // Leashing the mob.
+        // The actual leashing process has to run in a scheduler with a slight delay,
+        // due to the way the event works.
+        runEntityTaskLater(entity, () -> {
+            // Vanilla leashes mobs it supports itself (we let PlayerLeashEntityEvent through for those),
+            // which also takes the lead and fires vanilla's side effects, such as the
+            // husbandry/leash_all_frog_variants advancement criteria. Nothing left to do here.
+            if (entity.isLeashed()) return;
+
+            // Vanilla wouldn't leash this mob, so Tether does it, and takes the lead itself.
+            ItemStack held = player.getInventory().getItemInMainHand();
+            if (held.getType() != Material.LEAD) return;
+            player.getInventory().setItemInMainHand(held.subtract());
+            entity.setLeashHolder(player);
+        }, 1L);
+    }
+
+    /**
+     * Checks whether Tether allows this player to leash this entity.
+     *
+     * @throws InvalidParameterException if the LivingEntity passed in is a Player.
+     * @throws LeashException            when the leash is not allowed (LeashErrorType).
+     */
+    public void checkCanLeash(Player player, LivingEntity entity) throws InvalidParameterException, LeashException {
         if (entity instanceof Player) throw new InvalidParameterException();
 
         // Blacklist/whitelist check.
@@ -55,15 +82,6 @@ public class LeashMobService {
                 throw new LeashException(LeashErrorType.NPC_UNLEASHABLE);
             }
         }
-
-        // Begin the leashing process.
-        ItemStack held = player.getInventory().getItemInMainHand();
-        player.getInventory().setItemInMainHand(held.subtract());
-
-        // Leashing the mob.
-        // The actual leashing process has to run in a scheduler with a slight delay,
-        // due to the way the event works.
-        runEntityTaskLater(entity, () -> entity.setLeashHolder(player), 1L);
     }
 
     /**
