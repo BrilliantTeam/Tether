@@ -5,7 +5,6 @@ import dev.naspo.tether.Utils;
 import dev.naspo.tether.exceptions.NoPermissionException;
 import dev.naspo.tether.exceptions.leashexception.LeashErrorType;
 import dev.naspo.tether.exceptions.leashexception.LeashException;
-import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -80,8 +79,8 @@ public class LeashPlayerService {
             player.getInventory().setItemInMainHand(held.subtract());
 
             // The actual leashing process has to run in a scheduler with a slight delay,
-            // due to the way the event works.
-            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            // due to the way the event works. (On the target's scheduler, as Folia requires for spawning next to them).
+            target.getScheduler().runDelayed(plugin, task -> {
                 // Spawn a chicken (set invisible, invulnerable, etc)
                 LivingEntity mob = (LivingEntity) world.spawnEntity(loc, EntityType.CHICKEN);
                 mob.setMetadata("naspodev_tether_plugin", new FixedMetadataValue(plugin, "_"));
@@ -99,10 +98,10 @@ public class LeashPlayerService {
                                 plugin.getConfig().getString("messages.player-leashed-escapable")));
                     } else {
                         target.sendMessage(Utils.chatColor(Utils.getPrefix(plugin) +
-                                "messages.player-leashed-not-escapable"));
+                                plugin.getConfig().getString("messages.player-leashed-not-escapable")));
                     }
                 }
-            }, 1L);
+            }, null, 1L);
         }
     }
 

@@ -14,7 +14,7 @@ public class PlayerInteractListener implements Listener {
         this.leashMobService = leashMobService;
     }
 
-    @EventHandler
+    @EventHandler(ignoreCancelled = true)
     private void onPlayerInteract(PlayerInteractEvent event) {
         // Ensuring it's a right-click on a fence with the main hand.
         // Used for fence post functionality for mobs that are not leashable by default as fence post
@@ -22,6 +22,9 @@ public class PlayerInteractListener implements Listener {
         if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
         if (event.getHand() != EquipmentSlot.HAND) return;
         if (!event.getClickedBlock().getType().name().toLowerCase().endsWith("fence")) return;
-        leashMobService.handleFenceLeashing(event.getPlayer(), event.getClickedBlock().getLocation());
+        // Vanilla would otherwise tie the mobs Tether just took off the fence straight back to it.
+        if (leashMobService.handleFenceLeashing(event.getPlayer(), event.getClickedBlock().getLocation())) {
+            event.setCancelled(true);
+        }
     }
 }

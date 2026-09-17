@@ -13,15 +13,15 @@ import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
-import org.bukkit.event.player.PlayerInteractAtEntityEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.inventory.EquipmentSlot;
 
-public class PlayerInteractAtEntityListener implements Listener {
+public class PlayerInteractEntityListener implements Listener {
     private final Tether plugin;
     private final LeashMobService leashMobService;
     private final LeashPlayerService leashPlayerService;
 
-    public PlayerInteractAtEntityListener(
+    public PlayerInteractEntityListener(
             Tether plugin,
             LeashMobService leashMobService,
             LeashPlayerService leashPlayerService) {
@@ -30,8 +30,12 @@ public class PlayerInteractAtEntityListener implements Listener {
         this.leashPlayerService = leashPlayerService;
     }
 
-    @EventHandler
-    private void onPlayerInteractAtEntity(PlayerInteractAtEntityEvent event) {
+    // Not PlayerInteractAtEntityEvent: that one comes from a separate packet the client sends first, so vanilla
+    // would still handle the click afterwards and undo what Tether did (e.g. tie the mobs back to the fence).
+    // This event fires right before vanilla handles the click, and cancelling it skips vanilla.
+    // Clicks already cancelled, e.g. by protection plugins (Residence protects leash hitches this way), are ignored.
+    @EventHandler(ignoreCancelled = true)
+    private void onPlayerInteractEntity(PlayerInteractEntityEvent event) {
         // Including Living entity to include NPCs.
         if (event.getRightClicked() instanceof LivingEntity &&
                 !(event.getRightClicked() instanceof Player)) {
@@ -49,25 +53,22 @@ public class PlayerInteractAtEntityListener implements Listener {
         }
     }
 
-    // Using PlayerInteractAtEntityEvent as its more general than PlayerLeashEntityEvent.
+    // Using PlayerInteractEntityEvent as its more general than PlayerLeashEntityEvent.
     // It's used for handling mobs that are not leasable by default.
-    private void handlePlayerInteractAtMob(PlayerInteractAtEntityEvent event) {
+    private void handlePlayerInteractAtMob(PlayerInteractEntityEvent event) {
         if (!(event.getRightClicked() instanceof LivingEntity entity)) return;
         if (event.getHand() == EquipmentSlot.OFF_HAND) return;
 
         Player player = event.getPlayer();
 
         // If they are sneaking which right-clicking the mob, try leashing mobs together.
-        if (player.isSneaking()) {
-            leashMobService.handleSneakInteract(player, entity);
-        }
-
-        if (entity.isLeashed()) {
-            if (entity.getLeashHolder().equals(player)) {
-                event.setCancelled(true);
-            }
+        if (player.isSneaking() && leashMobService.handleSneakInteract(player, entity)) {
+            event.setCancelled(true);
             return;
         }
+
+        // Mobs leashed by a player are left to vanilla, which unleashes them for their holder and denies others.
+        if (entity.isLeashed() && entity.getLeashHolder() instanceof Player) return;
 
         // If they have a lead in their hand we can try to leash the mob.
         if (player.getInventory().getItemInMainHand().getType().equals(Material.LEAD)) {
@@ -86,14 +87,18 @@ public class PlayerInteractAtEntityListener implements Listener {
         }
     }
 
-    private void handlePlayerInteractAtLeashHitch(PlayerInteractAtEntityEvent event) {
+    private void handlePlayerInteractAtLeashHitch(PlayerInteractEntityEvent event) {
         if (!(event.getRightClicked() instanceof LeashHitch)) return;
         if (event.getHand() == EquipmentSlot.OFF_HAND) return;
+        // Since 1.21.6 shears cut all leashes tied to the hitch, leave that to vanilla.
+        if (event.getPlayer().getInventory().getItemInMainHand().getType() == Material.SHEARS) return;
 
-        leashMobService.handleFenceLeashing(event.getPlayer(), event.getRightClicked().getLocation());
+        if (leashMobService.handleFenceLeashing(event.getPlayer(), event.getRightClicked().getLocation())) {
+            event.setCancelled(true);
+        }
     }
 
-    private void handlePlayerInteractAtPlayer(PlayerInteractAtEntityEvent event) {
+    private void handlePlayerInteractAtPlayer(PlayerInteractEntityEvent event) {
         if (!(event.getRightClicked() instanceof Player)) return;
         if (event.getHand() == EquipmentSlot.OFF_HAND) return;
 

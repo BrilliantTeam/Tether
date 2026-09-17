@@ -4,12 +4,14 @@ import dev.naspo.tether.Tether;
 import dev.naspo.tether.exceptions.NoPermissionException;
 import dev.naspo.tether.exceptions.leashexception.LeashErrorType;
 import dev.naspo.tether.exceptions.leashexception.LeashException;
+import io.papermc.paper.entity.Leashable;
 import net.citizensnpcs.api.CitizensAPI;
 import net.citizensnpcs.api.npc.NPC;
-import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.entity.*;
+import org.bukkit.event.entity.PlayerLeashEntityEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 
 import java.security.InvalidParameterException;
@@ -19,6 +21,9 @@ import java.util.stream.Collectors;
 
 // Responsible for logic related to leashing mobs.
 public class LeashMobService {
+    // How far a leash reaches before it snaps (12 blocks since 1.21.6, 10 before).
+    private static final double LEASH_LENGTH = 12;
+
     private final Tether plugin;
     private final ClaimCheckService claimCheckService;
 
@@ -44,18 +49,21 @@ public class LeashMobService {
         // Leashing the mob.
         // The actual leashing process has to run in a scheduler with a slight delay,
         // due to the way the event works.
-        runEntityTaskLater(entity, () -> {
+        entity.getScheduler().runDelayed(plugin, task -> {
             // Vanilla leashes mobs it supports itself (we let PlayerLeashEntityEvent through for those),
             // which also takes the lead and fires vanilla's side effects, such as the
             // husbandry/leash_all_frog_variants advancement criteria. Nothing left to do here.
-            if (entity.isLeashed()) return;
+            if (entity.isLeashed() && entity.getLeashHolder() instanceof Player) return;
 
             // Vanilla wouldn't leash this mob, so Tether does it, and takes the lead itself.
             ItemStack held = player.getInventory().getItemInMainHand();
             if (held.getType() != Material.LEAD) return;
+            // Since 1.21.6 a lead also takes a mob off a fence or another mob, which drops the lead that tied it there.
+            boolean wasLeashed = entity.isLeashed();
+            if (!leashTo(player, entity, player)) return;
+            if (wasLeashed) entity.getWorld().dropItemNaturally(entity.getLocation(), new ItemStack(Material.LEAD));
             player.getInventory().setItemInMainHand(held.subtract());
-            entity.setLeashHolder(player);
-        }, 1L);
+        }, null, 1L);
     }
 
     /**
@@ -89,42 +97,17 @@ public class LeashMobService {
      *
      * @param player   The player that right-clicked the fence or leash hitch.
      * @param location The location of the fence or leash hitch.
+     * @return Whether any leash was moved. The click is then Tether's, and vanilla must not handle it as well.
      */
-    private void runEntityTaskLater(LivingEntity entity, Runnable task, long delay) {
-        try {
-            if (isFoliaOrPaper()) {
-                 entity.getScheduler().runDelayed(plugin, (scheduledTask) -> task.run(), null, delay);
-                 return;
-            }
-        } catch (Throwable ignored) {
-        }
-
-        Bukkit.getScheduler().runTaskLater(plugin, task, delay);
-    }
-
-    private boolean isFoliaOrPaper() {
-        try {
-            Entity.class.getMethod("getScheduler");
-            return true;
-        } catch (NoSuchMethodException e) {
-            return false;
-        }
-    }
-
-    public void handleFenceLeashing(Player player, Location location) {
-        // Transfer mobs from fence to player:
-        // First wait for the PlayerLeashEntityEvent to finish then set the player as the leash holder for the rest of
-        // the mobs still leashed to the fence. (The mobs still leashed to the fence at that point would be mobs not
-        // leashable by default).
-        if (getMobsLeashedByPlayer(player).isEmpty() && !getMobsLeashedToFence(location).isEmpty()) {
-            transferMobsFromFenceToPlayer(player, location);
-            return;
-        }
-
+    public boolean handleFenceLeashing(Player player, Location location) {
         // Leashing mobs to a fence:
-        if (!getMobsLeashedByPlayer(player).isEmpty()) {
-            transferMobsFromPlayerToFence(player, location);
+        List<Leashable> heldMobs = getMobsLeashedByPlayer(player);
+        if (!heldMobs.isEmpty()) {
+            return transferMobsFromPlayerToFence(player, heldMobs, location);
         }
+
+        // Transfer mobs from fence to player (like vanilla, not while sneaking):
+        return !player.isSneaking() && transferMobsFromFenceToPlayer(player, location);
     }
 
     /**
@@ -133,14 +116,17 @@ public class LeashMobService {
      *
      * @param player The player who sneak-interacted with an entity.
      * @param entity The LivingEntity that was sneak-interacted with. (Not `Mob` because NPCs are supported).
+     * @return Whether any mob was leashed to the entity. The click is then Tether's, and vanilla must not
+     * also leash or unleash the entity.
      */
-    public void handleSneakInteract(Player player, LivingEntity entity) {
-        if (entity instanceof Player) return;
-        if (entity.isLeashed() && entity.getLeashHolder().equals(player)) return;
+    public boolean handleSneakInteract(Player player, LivingEntity entity) {
+        if (entity instanceof Player) return false;
 
-        for (Mob mob : getMobsLeashedByPlayer(player)) {
-            mob.setLeashHolder(entity);
+        boolean leashed = false;
+        for (Leashable mob : getMobsLeashedByPlayer(player)) {
+            if (!mob.equals(entity)) leashed |= leashTo(player, mob, entity);
         }
+        return leashed;
     }
 
     // Checks the whitelist or blacklist to see whether the entity is restricted from being leashed or not.
@@ -169,13 +155,22 @@ public class LeashMobService {
         return false;
     }
 
-    private List<Mob> getMobsLeashedByPlayer(Player player) {
-        List<Mob> leashedMobs = new ArrayList<>();
-        for (Entity entity : player.getNearbyEntities(10, 10, 10)) {
-            if (entity instanceof Mob mob) {
-                if (mob.isLeashed() && mob.getLeashHolder() instanceof Player holder && holder.equals(player)) {
-                    leashedMobs.add(mob);
-                }
+    /**
+     * Moves the entity's leash to the holder if PlayerLeashEntityEvent, the same event vanilla fires, allows it.
+     * That way protection plugins (and Tether's own checks, see PlayerLeashEntityListener) apply to Tether too.
+     */
+    private boolean leashTo(Player player, Entity entity, Entity holder) {
+        return entity instanceof Leashable leashable
+                && new PlayerLeashEntityEvent(entity, holder, player, EquipmentSlot.HAND).callEvent()
+                && leashable.setLeashHolder(holder);
+    }
+
+    // Also includes boats, which can be leashed since 1.21.6.
+    private List<Leashable> getMobsLeashedByPlayer(Player player) {
+        List<Leashable> leashedMobs = new ArrayList<>();
+        for (Entity entity : player.getNearbyEntities(LEASH_LENGTH, LEASH_LENGTH, LEASH_LENGTH)) {
+            if (entity instanceof Leashable mob && mob.isLeashed() && mob.getLeashHolder().equals(player)) {
+                leashedMobs.add(mob);
             }
         }
         return leashedMobs;
@@ -183,65 +178,61 @@ public class LeashMobService {
 
     /**
      * @param location The location of the fence or leash hitch.
-     * @return The list of mobs leashed to that fence.
+     * @return The leash hitch on that fence, or null if there is none.
      */
-    private List<Mob> getMobsLeashedToFence(Location location) {
-        List<Mob> leashedMobs = new ArrayList<>();
-
-        // Find the leash hitch.
-        LeashHitch leashHitch = null;
+    private LeashHitch getLeashHitch(Location location) {
         for (Entity entity : location.getWorld().getNearbyEntities(location, 1, 1, 1)) {
-            if (entity instanceof LeashHitch lh) {
-                leashHitch = lh;
-                break;
+            if (entity instanceof LeashHitch leashHitch) {
+                return leashHitch;
             }
         }
+        return null;
+    }
+
+    /**
+     * @param location The location of the fence or leash hitch.
+     * @return The list of mobs leashed to that fence.
+     */
+    private List<Leashable> getMobsLeashedToFence(Location location) {
+        List<Leashable> leashedMobs = new ArrayList<>();
 
         // If there is a leash hitch, find all entities leashed to it.
+        LeashHitch leashHitch = getLeashHitch(location);
         if (leashHitch != null) {
-            for (Entity entity : leashHitch.getWorld().getNearbyEntities(leashHitch.getLocation(), 10, 10, 10)) {
-                if (entity instanceof Mob mob) {
-                    if (mob.isLeashed() && mob.getLeashHolder() instanceof LeashHitch holder && holder.equals(leashHitch)) {
-                        leashedMobs.add(mob);
-                    }
+            for (Entity entity : leashHitch.getNearbyEntities(LEASH_LENGTH, LEASH_LENGTH, LEASH_LENGTH)) {
+                if (entity instanceof Leashable mob && mob.isLeashed() && mob.getLeashHolder().equals(leashHitch)) {
+                    leashedMobs.add(mob);
                 }
             }
         }
         return leashedMobs;
     }
 
-    private void transferMobsFromFenceToPlayer(Player player, Location fenceLocation) {
-        List<Mob> mobs = getMobsLeashedToFence(fenceLocation);
-        for (Mob mob : mobs) {
-            mob.setLeashHolder(player);
+    private boolean transferMobsFromFenceToPlayer(Player player, Location fenceLocation) {
+        boolean moved = false;
+        for (Leashable mob : getMobsLeashedToFence(fenceLocation)) {
+            moved |= leashTo(player, mob, player);
         }
+        return moved;
     }
 
-    private void transferMobsFromPlayerToFence(Player player, Location fenceLocation) {
-        List<Mob> leashedMobs = getMobsLeashedByPlayer(player);
-
-        // Finding the leash hitch on the fence.
-        LeashHitch leashHitch = null;
-        for (Entity entity : fenceLocation.getWorld().getNearbyEntities(fenceLocation, 1, 1, 1)) {
-            if (entity instanceof LeashHitch lh) {
-                leashHitch = lh;
-                break;
-            }
-        }
-
-        // If there is no leash hitch we have to create one.
-        if (leashHitch == null) {
+    private boolean transferMobsFromPlayerToFence(Player player, List<Leashable> leashedMobs, Location fenceLocation) {
+        // If there is no leash hitch on the fence we have to create one.
+        LeashHitch leashHitch = getLeashHitch(fenceLocation);
+        boolean created = leashHitch == null;
+        if (created) {
             // The location that the hitch should be. Cloning as to not modify the fenceLocation value.
             // 0.5 is added to properly visually align the hitch.
             Location hitchLocation = fenceLocation.clone().add(0.5, 0.5, 0.5);
             leashHitch = (LeashHitch) fenceLocation.getWorld().spawnEntity(hitchLocation, EntityType.LEASH_KNOT);
-            for (Mob mob : leashedMobs) {
-                mob.setLeashHolder(leashHitch);
-            }
-        } else {
-            for (Mob mob : leashedMobs) {
-                mob.setLeashHolder(leashHitch);
-            }
         }
+
+        boolean moved = false;
+        for (Leashable mob : leashedMobs) {
+            moved |= leashTo(player, mob, leashHitch);
+        }
+        // Like vanilla, don't leave an empty hitch behind if no leash was allowed.
+        if (created && !moved) leashHitch.remove();
+        return moved;
     }
 }
