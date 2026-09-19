@@ -77,12 +77,10 @@ public class PlayerInteractEntityListener implements Listener {
             } catch (NoPermissionException e) {
                 event.setCancelled(true);
             } catch (LeashException e) {
-                // Only need to explicitly handle the LAND_CLAIM_RESTRICTION LeashException type.
-                if (e.getType() == LeashErrorType.LAND_CLAIM_RESTRICTION) {
-                    event.setCancelled(true);
-                    player.sendMessage(Utils.chatColor(Utils.getPrefix(plugin) + plugin.getConfig().getString(
-                            "messages.in-claim-deny-mob")));
-                }
+                event.setCancelled(true);
+                String message = e.getType() == LeashErrorType.LAND_CLAIM_RESTRICTION
+                        ? "messages.in-claim-deny-mob" : "messages.cannot-leash-mob";
+                player.sendMessage(Utils.chatColor(Utils.getPrefix(plugin) + plugin.getConfig().getString(message)));
             }
         }
     }

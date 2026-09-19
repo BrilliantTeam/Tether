@@ -38,6 +38,7 @@ messages:
   reload: "&7Tether has been reloaded!"
   no-permission: "&cYou do not have permission!"
   in-claim-deny-mob: "&7You may not leash this mob as it's in protected land."
+  cannot-leash-mob: "&7You may not leash this mob."
   in-claim-deny-player: "&7You may not leash this player as they're in protected land."
   player-leashed-escapable: "&7You've been leashed! Press &6crouch &7to escape."
   player-leashed-not-escapable: "&7You've been leashed!"
